@@ -10,9 +10,41 @@ Sample output:
 ```
 $ g++ -O3 -std=c++2a nfa.cc && ./a.out
 --------------------------
+Basic Tests
+NFA
+State 0 (start)
+    eps->1
+    a  ->2
+State 1
+    a  ->3
+    a  ->4
+State 2
+    b  ->3
+State 3
+    a  ->4
+    b  ->4
+State 4 (match)
+elapsed time: 2490.24ms
+312521
+DFA
+State 0 (start)
+    a  ->1
+State 1 (match)
+    a  ->2
+    b  ->3
+State 2 (match)
+State 3 (match)
+    a  ->2
+    b  ->2
+elapsed time: 47.778ms
+312521
+JIT
+elapsed time: 12.947ms
+312521
+--------------------------
 Regex Tests
 Regex as string: a(bb)+a
-elapsed time: 750.658ms
+elapsed time: 865.353ms
 332745
 Regex as NFA:
 State 0 (start)
@@ -53,7 +85,7 @@ State 16
 State 17
     eps->18
 State 18 (match)
-elapsed time: 22714.7ms
+elapsed time: 11163.7ms
 332745
 Regex as DFA:
 State 0 (start)
@@ -63,43 +95,11 @@ State 1
 State 2
     b  ->3
 State 3
-    b  ->2
     a  ->4
+    b  ->2
 State 4 (match)
-elapsed time: 157.699ms
+elapsed time: 61.988ms
 JIT
-elapsed time: 21.093ms
+elapsed time: 24.984ms
 332745
---------------------------
-Basic Tests
-NFA
-State 0 (start)
-    eps->1
-    a  ->2
-State 1
-    a  ->3
-    a  ->4
-State 2
-    b  ->3
-State 3
-    a  ->4
-    b  ->4
-State 4 (match)
-elapsed time: 3561.63ms
-312521
-DFA
-State 0 (start)
-    a  ->1
-State 1 (match)
-    b  ->3
-    a  ->2
-State 2 (match)
-State 3 (match)
-    a  ->2
-    b  ->2
-elapsed time: 47.34ms
-312521
-JIT
-elapsed time: 12.973ms
-312521
 ```

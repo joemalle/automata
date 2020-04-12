@@ -7,11 +7,13 @@
 #include <cassert>
 #include <chrono>
 #include <dlfcn.h>
-#include <functional>
 #include <fstream>
+#include <functional>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <regex>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -19,7 +21,7 @@
 // Finite Automaton base class for code shared between NFA and DFA
 template <typename Edge>
 struct FABase {
-    using StateRef = std::size_t;
+    using StateRef = int;
 
     StateRef addState() {
         m_states.emplace_back();
@@ -73,8 +75,8 @@ public:
 };
 
 // Deterministic Finite Automaton
-struct DFA : FABase</*Edge*/std::unordered_map<char, std::size_t>> {
-    using FABase</*Edge*/std::unordered_map<char, std::size_t>>::StateRef;
+struct DFA : FABase</*Edge*/std::map<char, int>> {
+    using FABase</*Edge*/std::map<char, int>>::StateRef;
     void addEdge(StateRef from, char cond, StateRef to) {
         assert(m_states.at(from).insert({cond, to}).second && "duplicate edge");
     }
@@ -101,14 +103,14 @@ struct DFA : FABase</*Edge*/std::unordered_map<char, std::size_t>> {
 };
 
 //  Nondeterministic Finite Automaton
-struct NFA : FABase</*Edge*/std::vector<std::pair<std::optional<char>, std::size_t>>> {
-    using FABase</*Edge*/std::vector<std::pair<std::optional<char>, std::size_t>>>::StateRef;
+struct NFA : FABase</*Edge*/std::vector<std::pair<std::optional<char>, int>>> {
+    using FABase</*Edge*/std::vector<std::pair<std::optional<char>, int>>>::StateRef;
     void addEdge(StateRef from, std::optional<char> cond, StateRef to) {
         m_states.at(from).push_back({cond, to});
     }
 
 private:
-    using sset = std::unordered_set<StateRef>;
+    using sset = std::set<StateRef>;
 
     // add all edges reachable by following epsilons
     void FollowEpsilons(sset& stateset) const {
@@ -139,12 +141,12 @@ public:
         assert(m_start != -1);
         assert(!m_match.empty());
 
+        sset nextStates;
         sset currentStates = {m_start};
         FollowEpsilons(currentStates);
 
-        for (char c : sv) {
-            sset nextStates;
 
+        for (char c : sv) {
             for (auto state : currentStates) {
                 for (auto& edge : m_states.at(state)) {
                     if (edge.first && c == *edge.first) {
@@ -154,7 +156,8 @@ public:
             }
 
             FollowEpsilons(nextStates);
-            currentStates = nextStates;
+            std::swap(nextStates, currentStates);
+            nextStates.clear();
         }
 
         for (auto state : currentStates) {
@@ -173,10 +176,10 @@ public:
             std::vector<StateRef> vec(s.begin(), s.end());
             std::sort(vec.begin(), vec.end());
             // https://en.wikipedia.org/wiki/Fowler–Noll–Vo_hash_function
-            std::size_t hash = 14695981039346656037u;
+            int hash = 2166136261;
             for (auto n : vec) {
                 hash ^= n;
-                hash *= 1099511628211;
+                hash *= 16777619;
             }
             return hash;
         };
@@ -191,7 +194,7 @@ public:
             auto newState = dfa.addState();
             cache.insert({states, newState});
 
-            std::unordered_map<char, sset> map;
+            std::unordered_map<char, sset> newEdges;
 
             for (auto state : states) {
                 if (m_match.count(state)) {
@@ -199,12 +202,12 @@ public:
                 }
                 for (auto& edge : m_states.at(state)) {
                     if (edge.first) {
-                        map[*edge.first].insert(edge.second);
+                        newEdges[*edge.first].insert(edge.second);
                     }
                 }
             }
 
-            for (auto [c, cstates] : map) {
+            for (auto [c, cstates] : newEdges) {
                 dfa.addEdge(newState, c, recurse(cstates));
             }
 
@@ -222,13 +225,13 @@ public:
 // JIT the DFA! WOMM
 struct JitFunction {
     JitFunction(DFA const& dfa) {
-        m_filename = "jitfunc" + std::to_string((std::size_t)&dfa);
+        m_filename = "jitfunc" + std::to_string((std::uintptr_t)&dfa);
         {
             std::ofstream outs((m_filename + ".c").c_str());
 
             outs
             << "int jitted(char* c, int len) { char ch;";
-            for (std::size_t i = 0; i < dfa.m_states.size(); ++i) {
+            for (int i = 0; i < dfa.m_states.size(); ++i) {
                 outs
                 << std::endl
                 << "state" << i << ":"
@@ -343,25 +346,25 @@ struct Char {
 // insert src into dst at dstref.  Creates a state that indicates a match of src in dst, and returns a ref.
 NFA::StateRef merge(NFA& dst, NFA::StateRef dstref, NFA&& src) {
     // this map could just be addition but this is fine
-    std::unordered_map</*src*/ NFA::StateRef, /*dst*/NFA::StateRef> map;
+    std::unordered_map</*src*/ NFA::StateRef, /*dst*/NFA::StateRef> newEdges;
     for (NFA::StateRef i = 0; i < src.m_states.size(); ++i) {
-        map[i] = dst.addState();
+        newEdges[i] = dst.addState();
     }
 
     for (NFA::StateRef i = 0; i < src.m_states.size(); ++i) {
         for (auto& edge : src.m_states.at(i)) {
-            dst.addEdge(map.at(i), edge.first, map.at(edge.second));
+            dst.addEdge(newEdges.at(i), edge.first, newEdges.at(edge.second));
         }
     }
 
     // map dstRef to the start node
-    dst.addEdge(dstref, std::nullopt, map.at(src.m_start));
+    dst.addEdge(dstref, std::nullopt, newEdges.at(src.m_start));
 
     // map the matching nodes to one node
     auto matchsrc = dst.addState();
 
     for (auto srcstate : src.m_match) {
-        dst.addEdge(map.at(srcstate), std::nullopt, matchsrc);
+        dst.addEdge(newEdges.at(srcstate), std::nullopt, matchsrc);
     }
 
     return matchsrc;
@@ -572,6 +575,7 @@ bool regexTests() {
     assert(nfa.testMatch("abbbba"));
 
     std::cout << "Regex as NFA:" << std::endl;
+    // You can see in this printout that this NFA has a lot of unnecessary epsilon transitions
     nfa.print();
     int nfa_count = benchmark([&](auto const& str) {
         return nfa.testMatch(str);
@@ -608,12 +612,12 @@ bool regexTests() {
     });
     std::cout << jit_count << std::endl;
 
-    return jit_count == dfa_count && dfa_count == nfa_count;
+    return jit_count == dfa_count && dfa_count == nfa_count && nfa_count == stl_count;
 }
 
 int main() {
-    assert(regexTests());
     assert(basicTests());
+    assert(regexTests());
 }
 
 
