@@ -284,7 +284,7 @@ int benchmark(Func func) {
     std::vector<std::string> tests;
     srand(0);
 
-    for (int i = 0; i < 500000; ++i) {
+    for (int i = 0; i < 1000000; ++i) {
         tests.push_back(cases.at(rand() % cases.size()));
     }
 
