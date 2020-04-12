@@ -276,13 +276,15 @@ struct JitFunction {
 template <typename Func>
 int benchmark(Func func) {
     std::vector<std::string> cases = {
-        "a", "ab", "abb", "c", "abbb"
+        "aba", "abb", "aa", "ab", "a",
+        "aaa", "aab", "baa", "bba", "bbb", "ba", "bb", "b", "c",
+        "blah blah blah", "abaracadabara"
     };
 
     std::vector<std::string> tests;
     srand(0);
 
-    for (int i = 0; i < 10000; ++i) {
+    for (int i = 0; i < 500000; ++i) {
         tests.push_back(cases.at(rand() % cases.size()));
     }
 
@@ -293,7 +295,7 @@ int benchmark(Func func) {
 
         ~TimedScope() {
             auto stop = std::chrono::steady_clock::now();
-            std::cout << "elapsed time: " << (stop - start).count() << "s" << std::endl;
+            std::cout << "elapsed time: " << std::chrono::duration<double, std::milli>(stop - start).count() << "ms" << std::endl;
         }
         std::chrono::time_point<std::chrono::steady_clock> start;
     };
