@@ -1,6 +1,10 @@
 # automata
 Playing around with NFAs and DFAs
 
+TL;DR: my NFA simulator is pretty slow, but lowering to DFA and then simulating the DFA is much faster.  The DFA can be faster than `std::regex` (not definitive since I only tried one pattern plus `regex` handles more cases).
+
+JITing the DFA leads to a pretty signficant speedup.
+
 Sample output:
 
 ```
