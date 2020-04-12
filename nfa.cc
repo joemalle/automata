@@ -247,14 +247,14 @@ struct JitFunction {
         std::system(std::string("gcc -O3 -dynamiclib -undefined suppress -flat_namespace " + m_filename + ".c -o " + m_filename + ".dylib").c_str());
 
         // https://developer.apple.com/library/archive/documentation/DeveloperTools/Conceptual/DynamicLibraries/100-Articles/UsingDynamicLibraries.html
-        void* lib_handle = dlopen(std::string(m_filename + ".dylib").c_str(), RTLD_LOCAL|RTLD_LAZY);
+        m_lib_handle = dlopen(std::string(m_filename + ".dylib").c_str(), RTLD_LOCAL|RTLD_LAZY);
 
-        if (!lib_handle) {
+        if (!m_lib_handle) {
             printf("[%s] Unable to load library: %s\n", __FILE__, dlerror());
             exit(EXIT_FAILURE);
         }
 
-        m_jitted = (decltype(m_jitted))dlsym(lib_handle, "jitted");
+        m_jitted = (decltype(m_jitted))dlsym(m_lib_handle, "jitted");
 
         if (!m_jitted) {
             printf("[%s] Unable to get symbol: %s\n", __FILE__, dlerror());
@@ -263,6 +263,9 @@ struct JitFunction {
     }
 
     ~JitFunction() {
+        if (dlclose(m_lib_handle) != 0) {
+            printf("[%s] Problem closing library: %s", __FILE__, dlerror());
+        }
         std::system(std::string("rm -f " + m_filename + ".c " + m_filename + ".dylib").c_str());
     }
 
@@ -273,6 +276,7 @@ struct JitFunction {
 
     int (*m_jitted)(char* c, int len);
     std::string m_filename;
+    void* m_lib_handle;
 };
 
 
