@@ -5,6 +5,7 @@
 //
 // g++ -std=c++2a nfa.cc && ./a.out
 #include <cassert>
+#include <chrono>
 #include <dlfcn.h>
 #include <functional>
 #include <fstream>
@@ -272,6 +273,41 @@ struct JitFunction {
     std::string m_filename;
 };
 
+template <typename Func>
+int benchmark(Func func) {
+    std::vector<std::string> cases = {
+        "a", "ab", "abb", "c", "abbb"
+    };
+
+    std::vector<std::string> tests;
+    srand(0);
+
+    for (int i = 0; i < 10000; ++i) {
+        tests.push_back(cases.at(rand() % cases.size()));
+    }
+
+    struct TimedScope {
+        TimedScope() {
+            start = std::chrono::steady_clock::now();
+        }
+
+        ~TimedScope() {
+            auto stop = std::chrono::steady_clock::now();
+            std::cout << "elapsed time: " << (stop - start).count() << "s" << std::endl;
+        }
+        std::chrono::time_point<std::chrono::steady_clock> start;
+    };
+
+    int count = 0;
+    {
+        TimedScope timer;
+        for (auto& test : tests) {
+            count += func(test);
+        }
+    }
+    return count;
+}
+
 
 int main() {
     NFA nfa;
@@ -293,25 +329,33 @@ int main() {
     nfa.setStart(s1);
     nfa.addMatch(s5);
 
-    // std::cout << "NFA" << std::endl;
-    // nfa.print();
-
     assert(nfa.testMatch("a"));
     assert(nfa.testMatch("ab"));
     assert(nfa.testMatch("abb"));
     assert(!nfa.testMatch("c"));
     assert(!nfa.testMatch("abbb"));
 
-    DFA dfa = nfa.lower();
+    std::cout << "NFA" << std::endl;
+    nfa.print();
+    int nfa_count =benchmark([&](auto const& str) {
+        return nfa.testMatch(str);
+    });
+    std::cout << nfa_count << std::endl;
 
-    // std::cout << "DFA" << std::endl;
-    // dfa.print();
+    DFA dfa = nfa.lower();
 
     assert(dfa.testMatch("a"));
     assert(dfa.testMatch("ab"));
     assert(dfa.testMatch("abb"));
     assert(!dfa.testMatch("c"));
     assert(!dfa.testMatch("abbb"));
+
+    std::cout << "DFA" << std::endl;
+    dfa.print();
+    int dfa_count = benchmark([&](auto const& str) {
+        return dfa.testMatch(str);
+    });
+    std::cout << dfa_count << std::endl;
 
     JitFunction jfn(dfa);
 
@@ -320,6 +364,12 @@ int main() {
     assert(jfn("abb"));
     assert(!jfn("c"));
     assert(!jfn("abbb"));
+
+    std::cout << "JIT" << std::endl;
+    int jit_count = benchmark([&](auto const& str) {
+        return dfa.testMatch(str);
+    });
+    std::cout << jit_count << std::endl;
 }
 
 
