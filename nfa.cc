@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <regex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -66,8 +67,6 @@ public:
         }
     }
 
-protected:
-    friend class JitFunction;
     std::vector<Edge> m_states;
     StateRef m_start = -1;
     std::unordered_set<StateRef> m_match;
@@ -111,24 +110,27 @@ struct NFA : FABase</*Edge*/std::vector<std::pair<std::optional<char>, std::size
 private:
     using sset = std::unordered_set<StateRef>;
 
-    sset EpsilonReachable(sset const& ssetIn) const {
-        sset ssetOut;
+    // add all edges reachable by following epsilons
+    void FollowEpsilons(sset& stateset) const {
         std::function<void(StateRef)> recurse = [&](StateRef state) {
-            if (ssetOut.count(state)) {
+            if (stateset.count(state)) {
                 return;
             }
+
+            stateset.insert(state);
+
             for (auto& edge : m_states.at(state)) {
                 if (!edge.first) {
-                    ssetOut.insert(edge.second);
                     recurse(edge.second);
                 }
             }
         };
 
-        for (auto state : ssetIn) {
+        auto copy = std::move(stateset);
+        stateset.clear();
+        for (auto state : copy) {
             recurse(state);
         }
-        return ssetOut;
     }
 public:
 
@@ -138,7 +140,7 @@ public:
         assert(!m_match.empty());
 
         sset currentStates = {m_start};
-        currentStates.merge(EpsilonReachable(currentStates));
+        FollowEpsilons(currentStates);
 
         for (char c : sv) {
             sset nextStates;
@@ -151,7 +153,7 @@ public:
                 }
             }
 
-            nextStates.merge(EpsilonReachable(nextStates));
+            FollowEpsilons(nextStates);
             currentStates = nextStates;
         }
 
@@ -181,7 +183,7 @@ public:
 
         std::unordered_map<sset, StateRef, decltype(hasher)> cache(m_states.size(), hasher);
         std::function<StateRef(sset)> recurse = [&](sset states) {
-            states.merge(EpsilonReachable(states));
+            FollowEpsilons(states);
             if (cache.count(states)) {
                 return cache.at(states);
             }
@@ -273,45 +275,203 @@ struct JitFunction {
     std::string m_filename;
 };
 
-template <typename Func>
-int benchmark(Func func) {
-    std::vector<std::string> cases = {
+
+struct Benchmark {
+    std::vector<std::string> tests;
+
+    Benchmark(std::vector<std::string> cases) {
+        srand(0);
+        for (int i = 0; i < 1000000; ++i) {
+            tests.push_back(cases.at(rand() % cases.size()));
+        }
+    }
+
+    template <typename Func>
+    int operator()(Func func) const {
+        struct TimedScope {
+            TimedScope() {
+                start = std::chrono::steady_clock::now();
+            }
+
+            ~TimedScope() {
+                auto stop = std::chrono::steady_clock::now();
+                std::cout << "elapsed time: " << std::chrono::duration<double, std::milli>(stop - start).count() << "ms" << std::endl;
+            }
+            std::chrono::time_point<std::chrono::steady_clock> start;
+        };
+
+        int count = 0;
+        {
+            TimedScope timer;
+            for (auto& test : tests) {
+                count += func(test);
+            }
+        }
+        return count;
+    }
+};
+
+// Helpers to make regex/NFA from parser
+
+struct Char {
+    Char(char c) : c(c) {};
+    char c;
+
+    std::string toStr() const {
+        return std::string({c});
+    }
+
+    NFA toNFA() const {
+        NFA nfa;
+
+        auto start = nfa.addState();
+        nfa.setStart(start);
+
+        auto match = nfa.addState();
+        nfa.addMatch(match);
+
+        nfa.addEdge(start, c, match);
+
+        return nfa;
+    }
+};
+
+// insert src into dst at dstref.  Creates a state that indicates a match of src in dst, and returns a ref.
+NFA::StateRef merge(NFA& dst, NFA::StateRef dstref, NFA&& src) {
+    // this map could just be addition but this is fine
+    std::unordered_map</*src*/ NFA::StateRef, /*dst*/NFA::StateRef> map;
+    for (NFA::StateRef i = 0; i < src.m_states.size(); ++i) {
+        map[i] = dst.addState();
+    }
+
+    for (NFA::StateRef i = 0; i < src.m_states.size(); ++i) {
+        for (auto& edge : src.m_states.at(i)) {
+            dst.addEdge(map.at(i), edge.first, map.at(edge.second));
+        }
+    }
+
+    // map dstRef to the start node
+    dst.addEdge(dstref, std::nullopt, map.at(src.m_start));
+
+    // map the matching nodes to one node
+    auto matchsrc = dst.addState();
+
+    for (auto srcstate : src.m_match) {
+        dst.addEdge(map.at(srcstate), std::nullopt, matchsrc);
+    }
+
+    return matchsrc;
+}
+
+template <typename A, typename B>
+struct And {
+    And(A a, B b) : a(a), b(b) {}
+    A a;
+    B b;
+
+    std::string toStr() const {
+        return a.toStr() + b.toStr();
+    }
+
+    NFA toNFA() const {
+        NFA nfa;
+
+        auto start = nfa.addState();
+        nfa.setStart(start);
+
+        auto mid = merge(nfa, start, a.toNFA());
+        auto match = merge(nfa, mid, b.toNFA());
+
+        nfa.addMatch(match);
+
+        return nfa;
+    }
+};
+
+template <typename A, typename B>
+struct Or {
+    Or(A a, B b) : a(a), b(b) {}
+    A a;
+    B b;
+
+    std::string toStr() const {
+        return "(" + a.toStr() + ")|(" + b.toStr() + ")";
+    }
+
+    NFA toNFA() const {
+        NFA nfa;
+
+        auto start = nfa.addState();
+        nfa.setStart(start);
+
+        auto matcha = merge(nfa, start, a.toNFA());
+        auto matchb = merge(nfa, start, b.toNFA());
+
+        nfa.addMatch(matcha);
+        nfa.addMatch(matchb);
+
+        return nfa;
+    }
+};
+
+template <typename A>
+struct Maybe {
+    Maybe(A a) : a(a) {}
+    A a;
+
+    std::string toStr() const {
+        return "(" + a.toStr() + ")?";
+    }
+
+    NFA toNFA() const {
+        NFA nfa;
+
+        auto start = nfa.addState();
+        nfa.setStart(start);
+
+        auto matchit = merge(nfa, start, a.toNFA());
+
+        nfa.addMatch(matchit);
+        nfa.addEdge(start, std::nullopt, matchit);
+
+        return nfa;
+    }
+};
+
+template <typename A>
+struct OneOrMore {
+    OneOrMore(A a) : a(a) {}
+    A a;
+
+    std::string toStr() const {
+        return "(" + a.toStr() + ")+";
+    }
+
+    NFA toNFA() const {
+        NFA nfa;
+
+        auto start = nfa.addState();
+        nfa.setStart(start);
+
+        auto matchit = merge(nfa, start, a.toNFA());
+
+        nfa.addMatch(matchit);
+        nfa.addEdge(matchit, std::nullopt, start);
+
+        return nfa;
+    }
+};
+
+bool basicTests() {
+    std::cout << "--------------------------" << std::endl;
+    std::cout << "Basic Tests" << std::endl;
+
+    Benchmark benchmark({
         "aba", "abb", "aa", "ab", "a",
         "aaa", "aab", "baa", "bba", "bbb", "ba", "bb", "b", "c",
         "blah blah blah", "abaracadabara"
-    };
+    });
 
-    std::vector<std::string> tests;
-    srand(0);
-
-    for (int i = 0; i < 1000000; ++i) {
-        tests.push_back(cases.at(rand() % cases.size()));
-    }
-
-    struct TimedScope {
-        TimedScope() {
-            start = std::chrono::steady_clock::now();
-        }
-
-        ~TimedScope() {
-            auto stop = std::chrono::steady_clock::now();
-            std::cout << "elapsed time: " << std::chrono::duration<double, std::milli>(stop - start).count() << "ms" << std::endl;
-        }
-        std::chrono::time_point<std::chrono::steady_clock> start;
-    };
-
-    int count = 0;
-    {
-        TimedScope timer;
-        for (auto& test : tests) {
-            count += func(test);
-        }
-    }
-    return count;
-}
-
-
-int main() {
     NFA nfa;
 
     auto s1 = nfa.addState();
@@ -339,7 +499,7 @@ int main() {
 
     std::cout << "NFA" << std::endl;
     nfa.print();
-    int nfa_count =benchmark([&](auto const& str) {
+    int nfa_count = benchmark([&](auto const& str) {
         return nfa.testMatch(str);
     });
     std::cout << nfa_count << std::endl;
@@ -369,12 +529,88 @@ int main() {
 
     std::cout << "JIT" << std::endl;
     int jit_count = benchmark([&](auto const& str) {
-        return dfa.testMatch(str);
+        return jfn(str);
     });
     std::cout << jit_count << std::endl;
+
+    return jit_count == dfa_count && dfa_count == nfa_count;
 }
 
+bool regexTests() {
+    // a(bb)+a (the same example as the article linked at the top of this file)
 
+    std::cout << "--------------------------" << std::endl;
+    std::cout << "Regex Tests" << std::endl;
+    
+    Benchmark benchmark({
+        "aa", "aba", "abba", "abbba", "abbbba", "abbbbbbbbbbbbbbbbbbbba", "abbbbbbbbbbbbbbbbbba"
+        "blah blah blah", "abaracadabara", "crapola"
+    });
+
+    auto parser = And(And(Char('a') , OneOrMore(And(Char('b'), Char('b')))), Char('a'));
+
+    auto str = parser.toStr();
+    std::cout << "Regex as string: " << str << std::endl;
+
+    const std::regex stl_regex(str);
+    
+    int stl_count = benchmark([&](auto const& str) {
+        return std::regex_match(str, stl_regex);
+    });
+    std::cout << stl_count << std::endl;
+
+    auto nfa = parser.toNFA();
+
+    assert(!nfa.testMatch("aa"));
+    assert(!nfa.testMatch("aba"));
+    assert(nfa.testMatch("abba"));
+    assert(!nfa.testMatch("abbba"));
+    assert(nfa.testMatch("abbbba"));
+
+    std::cout << "Regex as NFA:" << std::endl;
+    nfa.print();
+    int nfa_count = benchmark([&](auto const& str) {
+        return nfa.testMatch(str);
+    });
+    std::cout << nfa_count << std::endl;
+
+    auto dfa = nfa.lower();
+
+    assert(!dfa.testMatch("aa"));
+    assert(!dfa.testMatch("aba"));
+    assert(dfa.testMatch("abba"));
+    assert(!dfa.testMatch("abbba"));
+    assert(dfa.testMatch("abbbba"));
+
+
+    std::cout << "Regex as DFA:" << std::endl;
+    dfa.print();
+    int dfa_count = benchmark([&](auto const& str) {
+        return dfa.testMatch(str);
+    });
+    
+    JitFunction jfn(dfa);
+
+
+    assert(!jfn("aa"));
+    assert(!jfn("aba"));
+    assert(jfn("abba"));
+    assert(!jfn("abbba"));
+    assert(jfn("abbbba"));
+
+    std::cout << "JIT" << std::endl;
+    int jit_count = benchmark([&](auto const& str) {
+        return jfn(str);
+    });
+    std::cout << jit_count << std::endl;
+
+    return jit_count == dfa_count && dfa_count == nfa_count;
+}
+
+int main() {
+    assert(regexTests());
+    assert(basicTests());
+}
 
 
 
